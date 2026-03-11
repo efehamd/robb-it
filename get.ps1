@@ -1,0 +1,1 @@
+$d="$env:LOCALAPPDATA\RobbIT";md $d -f>$null;irm https://github.com/efehamd/robb-it/releases/latest/download/RobbIT.exe -o "$d\robbit.exe";$env:PATH+=";$d";[Environment]::SetEnvironmentVariable("PATH",$env:PATH,"User");robbit
