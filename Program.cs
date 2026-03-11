@@ -274,9 +274,11 @@ void ShowWelcome()
     layout.AddRow(
         new Markup(
             "\n  [bold white]Robb-IT Security[/]\n  [grey]v2.0 · Defense Tool[/]\n\n" +
-            "  [bold mediumpurple1](\\(\\[/]\n" +
-            "  [bold mediumpurple1]([/][pink1]*[/][bold mediumpurple1].[/][pink1]*[/][bold mediumpurple1])[/]\n" +
-            "  [bold mediumpurple1](\")(\")[/]\n  [grey]  file buddy[/]\n"
+            "  [mediumpurple1]  /\\ /\\[/]\n" +
+            "  [mediumpurple1] ([/] [pink1]o[/][mediumpurple1].[/][pink1]o[/] [mediumpurple1])[/]\n" +
+            "  [mediumpurple1]  (> <)[/]\n" +
+            "  [mediumpurple1]  /| |\\[/]\n" +
+            "  [grey]  robb-it[/]\n"
         ),
         new Markup(
             "[bold mediumpurple1]What can I do?[/]\n[grey]──────────────────────────────────[/]\n" +
