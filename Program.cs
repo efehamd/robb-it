@@ -1298,10 +1298,9 @@ void DpiBypass()
     AnsiConsole.Write(new Panel(new Markup(
         $"{statusLine}\n\n" +
         "[bold white]How it works (no external programs needed):[/]\n" +
-        "[grey]1.[/] [white]DNS → Cloudflare 1.1.1.1 over HTTPS[/] [grey]— defeats DNS-based blocking\n" +
-        "[grey]2.[/] [white]Local TCP proxy on port 8881[/] [grey]— intercepts your browser traffic\n" +
-        "[grey]3.[/] [white]TLS ClientHello fragmentation[/] [grey]— splits the packet DPI reads\n" +
-        "   to detect & block sites, so it can't see the full SNI field[/]"
+        "[grey]1.[/] [white]DNS → Cloudflare 1.1.1.1 over HTTPS[/] [grey]— defeats DNS-based blocking[/]\n" +
+        "[grey]2.[/] [white]Local TCP proxy on port 8881[/] [grey]— intercepts your browser traffic[/]\n" +
+        "[grey]3.[/] [white]TLS ClientHello fragmentation[/] [grey]— splits the packet DPI reads to detect and block sites, so it cannot see the full SNI field[/]"
     )).Header("[bold mediumpurple1] DPI Bypass [/]")
       .BorderColor(active ? Color.Green : Color.MediumPurple1).Padding(2, 0));
     AnsiConsole.WriteLine();
