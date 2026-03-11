@@ -222,7 +222,8 @@ while (true)
             .HighlightStyle(Style.Parse("bold mediumpurple1"))
             .AddChoiceGroup("Scan", "Full System Scan", "Scan Directory", "Scan Running Processes",
                 "Scan Startup & Persistence", "Scan Scheduled Tasks", "Check Hosts File",
-                "Check WMI Persistence", "Show Network Connections", "Hash a File")
+                "Check WMI Persistence", "Show Network Connections", "Hash a File",
+                "Deep File Scan")
             .AddChoiceGroup("Network", "Block a Connection", "Manage Blocked IPs", "Live Traffic Monitor", "DPI Bypass")
             .AddChoiceGroup("", "Exit")
     );
@@ -241,6 +242,7 @@ while (true)
             case "Check WMI Persistence":     ScanWmiPersistence();      break;
             case "Show Network Connections":  ShowNetworkConnections();  break;
             case "Hash a File":               HashFile();                break;
+            case "Deep File Scan":           DeepFileScan();            break;
             case "Block a Connection":        BlockConnection();         break;
             case "Manage Blocked IPs":        ManageBlockedIPs();        break;
             case "Live Traffic Monitor":      LiveTrafficMonitor();      break;
@@ -1518,6 +1520,210 @@ async Task ProxyCopy(NetworkStream from, NetworkStream to, CancellationToken ct)
             await to.WriteAsync(buf.AsMemory(0, n), ct);
     }
     catch { }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void DeepFileScan()
+{
+    var raw = AnsiConsole.Ask<string>("[mediumpurple1]Which file to scan?[/] [grey](e.g. downloads\\suspicious.exe)[/]");
+    var path = ResolvePath(raw);
+    if (!File.Exists(path)) { AnsiConsole.MarkupLine($"[red]File not found: {Markup.Escape(path)}[/]"); return; }
+
+    var info = new FileInfo(path);
+    string md5 = "", sha1 = "", sha256 = "";
+    double entropy = 0;
+    bool hasPe = false;
+    string? signer = null;
+    string fileType = "Unknown";
+    var suspiciousStrings = new List<string>();
+    var embeddedUrls      = new List<string>();
+    int riskScore = 0;
+    var riskReasons = new List<string>();
+
+    AnsiConsole.Status().Spinner(Spinner.Known.Dots).SpinnerStyle(Style.Parse("mediumpurple1"))
+        .Start("[mediumpurple1]Deep scanning file...[/]", _ =>
+        {
+            // Hashes
+            using var s = File.OpenRead(path);
+            md5    = Convert.ToHexString(MD5.HashData(s)).ToLower();    s.Seek(0, SeekOrigin.Begin);
+            sha1   = Convert.ToHexString(SHA1.HashData(s)).ToLower();   s.Seek(0, SeekOrigin.Begin);
+            sha256 = Convert.ToHexString(SHA256.HashData(s)).ToLower(); s.Seek(0, SeekOrigin.Begin);
+
+            // Read raw bytes
+            var bytes = new byte[Math.Min(info.Length, 2 * 1024 * 1024)]; // max 2MB
+            int totalRead = s.Read(bytes, 0, bytes.Length);
+
+            // Magic bytes / file type
+            fileType = DetectFileType(bytes);
+            hasPe    = totalRead >= 2 && bytes[0] == 0x4D && bytes[1] == 0x5A;
+
+            // Entropy
+            entropy = ComputeEntropy(path);
+
+            // Signature
+            signer = GetAuthenticodeSigner(path);
+
+            // Extract readable strings (min 5 chars)
+            var extracted = ExtractStrings(bytes, totalRead, 5);
+
+            // Suspicious API / technique strings
+            var suspPatterns = new[] {
+                "VirtualAlloc","WriteProcessMemory","CreateRemoteThread","ShellExecute",
+                "WinExec","URLDownloadToFile","InternetOpen","socket","WSAStartup",
+                "RegSetValue","RegCreateKey","CreateService","cmd.exe","powershell",
+                "base64","frombase64","invoke-expression","bypass","hidden",
+                "certutil","bitsadmin","mshta","wscript","cscript","rundll32",
+                "net user","net localgroup","whoami","mimikatz","lsass",
+                "\\temp\\","\\appdata\\","http://","https://",
+            };
+            foreach (var str in extracted)
+            {
+                foreach (var pat in suspPatterns)
+                    if (str.Contains(pat, StringComparison.OrdinalIgnoreCase)
+                        && !suspiciousStrings.Contains(str) && str.Length < 120)
+                    { suspiciousStrings.Add(str); break; }
+
+                // Pull out URLs
+                if ((str.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                     str.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                     && str.Length < 200 && !embeddedUrls.Contains(str))
+                    embeddedUrls.Add(str);
+            }
+
+            // ── Risk Scoring ──────────────────────────────────────────────
+            var ext  = Path.GetExtension(path);
+            var name = Path.GetFileName(path).ToLower();
+            var dir  = (Path.GetDirectoryName(path) ?? "").ToLower();
+
+            if (hasPe && documentExts.Contains(ext))
+            { riskScore += 40; riskReasons.Add("Document file contains executable code (PE header)"); }
+
+            var nameParts = name.Split('.');
+            if (nameParts.Length >= 3 && dangerousExts.Contains("." + nameParts[^1]) && documentExts.Contains("." + nameParts[^2]))
+            { riskScore += 35; riskReasons.Add("Double extension — fake document that runs as a program"); }
+
+            if (info.Attributes.HasFlag(FileAttributes.Hidden) && dangerousExts.Contains(ext))
+            { riskScore += 15; riskReasons.Add("File is hidden from view"); }
+
+            if (dir.Contains("\\temp\\") || dir.StartsWith(tempPath))
+            { riskScore += 25; riskReasons.Add("Located in a temporary folder"); }
+            else if (dir.Contains("\\appdata\\") && !IsInLegitPath(dir))
+            { riskScore += 15; riskReasons.Add("Located in a hidden AppData folder"); }
+
+            if (hasPe && signer == null)
+            { riskScore += 20; riskReasons.Add("Unsigned executable — no publisher certificate"); }
+            else if (hasPe && !IsTrustedSigner(path))
+            { riskScore += 10; riskReasons.Add("Signed by an unknown publisher"); }
+
+            if (entropy > 7.4)
+            { riskScore += 25; riskReasons.Add($"Very high entropy ({entropy:F1}/8.0) — likely packed or encrypted"); }
+            else if (entropy > 6.5)
+            { riskScore += 10; riskReasons.Add($"Elevated entropy ({entropy:F1}/8.0) — possibly compressed"); }
+
+            foreach (var m in knownMalware)
+                if (MatchesMalware(name, m))
+                { riskScore += 50; riskReasons.Add($"File name matches known malware: \"{m}\""); break; }
+
+            if (suspiciousStrings.Count > 0)
+            { int add = Math.Min(suspiciousStrings.Count * 5, 25); riskScore += add; riskReasons.Add($"{suspiciousStrings.Count} suspicious string(s) found inside the file"); }
+
+            if (embeddedUrls.Count > 3)
+            { riskScore += 10; riskReasons.Add($"{embeddedUrls.Count} embedded URLs found"); }
+
+            riskScore = Math.Min(riskScore, 100);
+        });
+
+    // ── Display ───────────────────────────────────────────────────────────────
+    string scoreColor = riskScore >= 70 ? "red" : riskScore >= 35 ? "yellow" : "green";
+    string scoreLabel = riskScore >= 70 ? "HIGH RISK" : riskScore >= 35 ? "SUSPICIOUS" : "LIKELY SAFE";
+    string signerDisplay = signer != null
+        ? (IsTrustedSigner(path) ? $"[green]{Markup.Escape(signer)}[/]" : $"[yellow]{Markup.Escape(signer)} (unknown)[/]")
+        : "[grey]Unsigned[/]";
+
+    AnsiConsole.WriteLine();
+    AnsiConsole.Write(new Panel(new Markup(
+        $"[grey]File     :[/] [white]{Markup.Escape(info.Name)}[/]\n" +
+        $"[grey]Size     :[/] [white]{info.Length:N0} bytes  ({info.Length / 1024.0:F1} KB)[/]\n" +
+        $"[grey]Type     :[/] [white]{Markup.Escape(fileType)}[/]\n" +
+        $"[grey]Modified :[/] [white]{info.LastWriteTime:yyyy-MM-dd HH:mm:ss}[/]\n" +
+        $"[grey]Signed by:[/] {signerDisplay}\n" +
+        $"[grey]Entropy  :[/] [white]{entropy:F2} / 8.0[/]\n\n" +
+        $"[grey]MD5      :[/] [white]{md5}[/]\n" +
+        $"[grey]SHA1     :[/] [white]{sha1}[/]\n" +
+        $"[grey]SHA256   :[/] [white]{sha256}[/]"
+    )).Header("[bold mediumpurple1] File Info [/]").BorderColor(Color.MediumPurple1).Padding(2, 1));
+
+    // Risk score panel
+    AnsiConsole.Write(new Panel(new Markup(
+        $"[bold {scoreColor}]  {riskScore}/100 — {scoreLabel}[/]\n\n" +
+        (riskReasons.Count > 0
+            ? string.Join("\n", riskReasons.Select(r => $"[{scoreColor}]•[/] {Markup.Escape(r)}"))
+            : "[green]No threat indicators found.[/]")
+    )).Header("[bold mediumpurple1] Risk Score [/]")
+      .BorderColor(riskScore >= 70 ? Color.Red : riskScore >= 35 ? Color.Yellow : Color.Green)
+      .Padding(2, 1));
+
+    // Suspicious strings
+    if (suspiciousStrings.Count > 0)
+    {
+        AnsiConsole.Write(new Panel(new Markup(
+            string.Join("\n", suspiciousStrings.Take(15).Select(s => $"[yellow]›[/] [grey]{Markup.Escape(s.Trim())}[/]"))
+            + (suspiciousStrings.Count > 15 ? $"\n[grey]  ... and {suspiciousStrings.Count - 15} more[/]" : "")
+        )).Header("[bold yellow] Suspicious Strings Found [/]").BorderColor(Color.Yellow).Padding(2, 1));
+    }
+
+    // Embedded URLs
+    if (embeddedUrls.Count > 0)
+    {
+        AnsiConsole.Write(new Panel(new Markup(
+            string.Join("\n", embeddedUrls.Take(10).Select(u => $"[mediumpurple1]›[/] [white]{Markup.Escape(u)}[/]"))
+            + (embeddedUrls.Count > 10 ? $"\n[grey]  ... and {embeddedUrls.Count - 10} more[/]" : "")
+        )).Header("[bold mediumpurple1] Embedded URLs [/]").BorderColor(Color.MediumPurple1).Padding(2, 1));
+    }
+
+    AnsiConsole.WriteLine();
+    AnsiConsole.MarkupLine("[grey]Copy the SHA256 above and check it on[/] [white]virustotal.com[/] [grey]to see results from 70+ antivirus engines.[/]");
+    if (AnsiConsole.Confirm("[mediumpurple1]Open this file on VirusTotal now?[/]"))
+    {
+        Process.Start(new ProcessStartInfo($"https://www.virustotal.com/gui/file/{sha256}") { UseShellExecute = true });
+        AnsiConsole.MarkupLine("[green]✓ Opened in your browser.[/]");
+    }
+}
+
+string DetectFileType(byte[] bytes)
+{
+    if (bytes.Length < 4) return "Unknown";
+    if (bytes[0] == 0x4D && bytes[1] == 0x5A) return "Windows Executable (PE)";
+    if (bytes[0] == 0x50 && bytes[1] == 0x4B && bytes[2] == 0x03 && bytes[3] == 0x04) return "ZIP / Office (OOXML) / JAR";
+    if (bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46) return "PDF Document";
+    if (bytes[0] == 0xD0 && bytes[1] == 0xCF && bytes[2] == 0x11 && bytes[3] == 0xE0) return "OLE2 (Word/Excel/PowerPoint)";
+    if (bytes[0] == 0x7F && bytes[1] == 0x45 && bytes[2] == 0x4C && bytes[3] == 0x46) return "ELF Executable (Linux)";
+    if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) return "JPEG Image";
+    if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) return "PNG Image";
+    if (bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46) return "GIF Image";
+    if (bytes[0] == 0x37 && bytes[1] == 0x7A && bytes[2] == 0xBC && bytes[3] == 0xAF) return "7-Zip Archive";
+    if (bytes[0] == 0x52 && bytes[1] == 0x61 && bytes[2] == 0x72 && bytes[3] == 0x21) return "RAR Archive";
+    if (bytes[0] == 0xCA && bytes[1] == 0xFE && bytes[2] == 0xBA && bytes[3] == 0xBE) return "Java Class File";
+    return "Unknown / Binary";
+}
+
+List<string> ExtractStrings(byte[] bytes, int length, int minLen)
+{
+    var results = new List<string>();
+    var current = new System.Text.StringBuilder();
+    for (int i = 0; i < length; i++)
+    {
+        byte b = bytes[i];
+        if (b >= 0x20 && b < 0x7F)
+            current.Append((char)b);
+        else
+        {
+            if (current.Length >= minLen) results.Add(current.ToString());
+            current.Clear();
+        }
+    }
+    if (current.Length >= minLen) results.Add(current.ToString());
+    return results;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
