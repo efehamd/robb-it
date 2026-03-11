@@ -7,6 +7,10 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Microsoft.Win32;
 
+// ── Encoding ──────────────────────────────────────────────────────────────────
+Console.OutputEncoding = Encoding.UTF8;
+Console.InputEncoding  = Encoding.UTF8;
+
 // ── Globals ───────────────────────────────────────────────────────────────────
 var tempPath = Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar).ToLower();
 
