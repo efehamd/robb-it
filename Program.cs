@@ -268,17 +268,30 @@ while (true)
 void ShowWelcome()
 {
     var layout = new Table().NoBorder().HideHeaders()
-        .AddColumn(new TableColumn("l").Width(26).PadRight(4))
+        .AddColumn(new TableColumn("l").Width(32).PadRight(2))
         .AddColumn(new TableColumn("r"));
 
     layout.AddRow(
         new Markup(
-            "\n  [bold white]Robb-IT Security[/]\n  [grey]v2.0 · Defense Tool[/]\n\n" +
-            "  [mediumpurple1]  /\\ /\\[/]\n" +
-            "  [mediumpurple1] ([/] [pink1]o[/][mediumpurple1].[/][pink1]o[/] [mediumpurple1])[/]\n" +
-            "  [mediumpurple1]  (> <)[/]\n" +
-            "  [mediumpurple1]  /| |\\[/]\n" +
-            "  [grey]  robb-it[/]\n"
+            "[mediumpurple1]⠀⠀⠀⠀⠀⣀⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]\n" +
+            "[mediumpurple1]⠀⠖⠉⠉⠉⠁⢈⣽⣟⠲⣄⠀⠀⠀⠀⣠⠤⣄⣀⣀⡀⠀⠀⠀⠀[/]\n" +
+            "[mediumpurple1]⢰⠀⠀⠀⠀⠀⣾⢿⣿⠀⣇⠀⠀⠀⢰⠃⣰⣶⣦⠀⠉⠓⠤⣀⠀[/]\n" +
+            "[mediumpurple1]⠈⡄⠀⠀⠀⣴⠟⣟⡇⠀⡟⠀⠀⢠⡏⠀⣿⣿⡿⠀⠀⠀⠀⠈⠇[/]\n" +
+            "[mediumpurple1]⠀⢱⠀⣀⡼⠹⡀⡼⠀⠰⡇⠀⠀⣸⠇⠀⡗⠋⣧⠀⠀⠀⠀⡸⠀[/]\n" +
+            "[mediumpurple1]⠀⠘⠈⠸⡇⠀⠘⢥⠀⠀⢻⣀⡼⠁⠀⠠⡃⠔⠹⡄⠀⢀⡜⠁⠀[/]\n" +
+            "[mediumpurple1]⠀⠀⠀⠀⠹⡀⠀⣀⣤⠤⣬⠥⢄⠀⠐⠋⠀⠀⡴⠍⠣⡘⠀⠀⠀[/]\n" +
+            "[mediumpurple1]⠀⠀⠀⢀⣼⠚⠉⡁⠀⠀⠙⠒⢄⡈⠠⡈⠢⡊⠀⠀⠀⠀⠀⠀⠀[/]\n" +
+            "[mediumpurple1]⠀⠀⢠⡟⠁⠀⢰⠁⠀⠀⠀⠀⠀⠀⠀⠈⢢⣇⠀⠀⠀⠀⠀⠀⠀[/]\n" +
+            "[mediumpurple1]⠀⣀⣿⡔⢀⣀⣾⡀⠀⠀⢀⠄⠀⠀⢠⠀⠀⣿⠀⠀⠀⠀⠀⠀⠀[/]\n" +
+            "[mediumpurple1]⠀⢼⢹⢳⣿⣿⣿⣿⡆⢀⠆⣠⣴⣦⣾⡀⢣⠸⠀⠀⠀⠀⠀⠀⠀[/]\n" +
+            "[mediumpurple1]⢀⣰⠎⢸⣿⣿⣿⡿⠁⡆⡆⣿⣿⣿⣿⣷⣠⡀⠀⠀⠀⠀⠀⠀⠀[/]\n" +
+            "[mediumpurple1]⢎⡁⠀⠀⠀⠏⠁⢠⡾⢷⡇⠈⢿⢿⣿⣿⢸⡏⠀⠀⠀⠀⠀⠀⠀[/]\n" +
+            "[mediumpurple1]⠈⢷⣤⣤⣤⡀⠄⠀⠁⠈⠛⠀⠀⠸⠁⠉⠀⠳⡄⠀⠀⠀⠀⠀⠀[/]\n" +
+            "[mediumpurple1]⠀⠀⠀⢈⡷⢧⣀⡀⡄⢀⠀⠋⣽⡷⠦⣤⡴⠞⠁⠀⠀⠀⠀⠀⠀[/]\n" +
+            "[mediumpurple1]⠀⠀⠀⠘⠷⢦⢧⣥⣏⣹⣱⣾⡏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]\n" +
+            "[mediumpurple1]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠉⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]\n" +
+            "[pink1]  ₍ᐢ. .ᐢ₎  [bold white]Robb-IT Security[/]\n" +
+            "[grey]            v2.0 · Defense Tool[/]"
         ),
         new Markup(
             "[bold mediumpurple1]What can I do?[/]\n[grey]──────────────────────────────────[/]\n" +
