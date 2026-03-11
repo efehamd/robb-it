@@ -1566,28 +1566,48 @@ void DeepFileScan()
             // Extract readable strings (min 5 chars)
             var extracted = ExtractStrings(bytes, totalRead, 5);
 
-            // Suspicious API / technique strings
+            // Suspicious API / technique strings — specific enough to avoid .NET runtime noise
             var suspPatterns = new[] {
-                "VirtualAlloc","WriteProcessMemory","CreateRemoteThread","ShellExecute",
-                "WinExec","URLDownloadToFile","InternetOpen","socket","WSAStartup",
-                "RegSetValue","RegCreateKey","CreateService","cmd.exe","powershell",
-                "base64","frombase64","invoke-expression","bypass","hidden",
-                "certutil","bitsadmin","mshta","wscript","cscript","rundll32",
-                "net user","net localgroup","whoami","mimikatz","lsass",
-                "\\temp\\","\\appdata\\","http://","https://",
+                "VirtualAlloc","WriteProcessMemory","CreateRemoteThread","ShellExecuteA","ShellExecuteW",
+                "WinExec","URLDownloadToFile","WSAStartup",
+                "RegSetValue","RegCreateKey","CreateService",
+                "cmd.exe /c","cmd.exe /k","powershell -","powershell.exe -",
+                "frombase64string","invoke-expression","invoke-webrequest",
+                "-encodedcommand","-windowstyle hidden","-executionpolicy bypass",
+                "certutil -decode","certutil -urlcache","bitsadmin /transfer",
+                "mshta.exe","wscript.exe","cscript.exe","rundll32.exe",
+                "net user /add","net localgroup administrators",
+                "whoami /all","mimikatz","sekurlsa","lsass.exe",
+                ":\\temp\\",":\\users\\public\\",
             };
+
+            // Strings to ignore — .NET runtime internals, framework names
+            var ignorePatterns = new[] {
+                "System.","Microsoft.","Windows.","runtime.","netstandard",
+                ".resources",".dll",".pdb",".xml","Namespace","Assembly",
+                "PublicKey","Culture=","Version=","processorArchitecture",
+            };
+
             foreach (var str in extracted)
             {
-                foreach (var pat in suspPatterns)
-                    if (str.Contains(pat, StringComparison.OrdinalIgnoreCase)
-                        && !suspiciousStrings.Contains(str) && str.Length < 120)
-                    { suspiciousStrings.Add(str); break; }
+                var trimmed = str.Trim();
 
-                // Pull out URLs
-                if ((str.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-                     str.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-                     && str.Length < 200 && !embeddedUrls.Contains(str))
-                    embeddedUrls.Add(str);
+                // Skip if it looks like a .NET framework string
+                bool isFramework = ignorePatterns.Any(p => trimmed.Contains(p, StringComparison.OrdinalIgnoreCase));
+                if (isFramework) goto checkUrl;
+
+                foreach (var pat in suspPatterns)
+                    if (trimmed.Contains(pat, StringComparison.OrdinalIgnoreCase)
+                        && !suspiciousStrings.Contains(trimmed) && trimmed.Length < 120)
+                    { suspiciousStrings.Add(trimmed); break; }
+
+                checkUrl:
+                // Pull out URLs (skip localhost/internal)
+                if ((trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                     trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                     && !trimmed.Contains("localhost") && !trimmed.Contains("127.0.0.")
+                     && trimmed.Length < 200 && !embeddedUrls.Contains(trimmed))
+                    embeddedUrls.Add(trimmed);
             }
 
             // ── Risk Scoring ──────────────────────────────────────────────
