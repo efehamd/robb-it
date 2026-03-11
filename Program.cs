@@ -358,8 +358,8 @@ void RunFullScan()
 // ─────────────────────────────────────────────────────────────────────────────
 void ScanDirectory()
 {
-    var raw = AnsiConsole.Ask<string>("[mediumpurple1]Which folder to scan?[/] [grey](desktop, downloads, documents, temp, or full path)[/]");
-    var path = ResolvePath(raw);
+    var path = PickFolder();
+    if (path == null) return;
     if (!Directory.Exists(path)) { AnsiConsole.MarkupLine($"[red]Folder not found: {Markup.Escape(path)}[/]"); return; }
     AnsiConsole.MarkupLine($"[grey]Scanning: {Markup.Escape(path)}[/]\n");
 
@@ -919,8 +919,8 @@ void ShowNetworkConnections()
 // ─────────────────────────────────────────────────────────────────────────────
 void HashFile()
 {
-    var raw = AnsiConsole.Ask<string>("[mediumpurple1]Which file to check?[/] [grey](e.g. downloads\\setup.exe)[/]");
-    var path = ResolvePath(raw);
+    var path = PickFile();
+    if (path == null) return;
     if (!File.Exists(path)) { AnsiConsole.MarkupLine($"[red]File not found: {Markup.Escape(path)}[/]"); return; }
 
     string md5 = "", sha1 = "", sha256 = "";
@@ -1525,8 +1525,8 @@ async Task ProxyCopy(NetworkStream from, NetworkStream to, CancellationToken ct)
 // ─────────────────────────────────────────────────────────────────────────────
 void DeepFileScan()
 {
-    var raw = AnsiConsole.Ask<string>("[mediumpurple1]Which file to scan?[/] [grey](e.g. downloads\\suspicious.exe)[/]");
-    var path = ResolvePath(raw);
+    var path = PickFile();
+    if (path == null) return;
     if (!File.Exists(path)) { AnsiConsole.MarkupLine($"[red]File not found: {Markup.Escape(path)}[/]"); return; }
 
     var info = new FileInfo(path);
@@ -1688,6 +1688,94 @@ void DeepFileScan()
         Process.Start(new ProcessStartInfo($"https://www.virustotal.com/gui/file/{sha256}") { UseShellExecute = true });
         AnsiConsole.MarkupLine("[green]✓ Opened in your browser.[/]");
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+string? PickFolder()
+{
+    var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    var locations = new Dictionary<string, string>
+    {
+        ["Desktop"]       = Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+        ["Downloads"]     = Path.Combine(profile, "Downloads"),
+        ["Documents"]     = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+        ["Pictures"]      = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
+        ["AppData"]       = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        ["Temp"]          = Path.GetTempPath(),
+        ["C:\\"]          = @"C:\",
+        ["Type a path..."]= "",
+    };
+
+    var choice = AnsiConsole.Prompt(
+        new SelectionPrompt<string>()
+            .Title("[mediumpurple1]Which folder?[/]")
+            .HighlightStyle(Style.Parse("bold mediumpurple1"))
+            .AddChoices(locations.Keys)
+    );
+
+    if (choice == "Type a path...")
+    {
+        var raw = AnsiConsole.Ask<string>("[mediumpurple1]Folder path:[/]");
+        return ResolvePath(raw);
+    }
+    return locations[choice];
+}
+
+string? PickFile()
+{
+    var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    var locations = new Dictionary<string, string>
+    {
+        ["Desktop"]       = Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+        ["Downloads"]     = Path.Combine(profile, "Downloads"),
+        ["Documents"]     = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+        ["Temp"]          = Path.GetTempPath(),
+        ["Type a path..."]= "",
+    };
+
+    var folderChoice = AnsiConsole.Prompt(
+        new SelectionPrompt<string>()
+            .Title("[mediumpurple1]Which folder is the file in?[/]")
+            .HighlightStyle(Style.Parse("bold mediumpurple1"))
+            .AddChoices(locations.Keys)
+    );
+
+    string folder;
+    if (folderChoice == "Type a path...")
+    {
+        var raw = AnsiConsole.Ask<string>("[mediumpurple1]Full file path:[/]");
+        return ResolvePath(raw);
+    }
+    folder = locations[folderChoice];
+
+    // List files in that folder
+    string[] files;
+    try { files = Directory.GetFiles(folder).OrderByDescending(File.GetLastWriteTime).Take(50).ToArray(); }
+    catch { files = Array.Empty<string>(); }
+
+    if (files.Length == 0)
+    {
+        AnsiConsole.MarkupLine("[yellow]No files found in that folder.[/]");
+        return null;
+    }
+
+    var fileNames = files.Select(Path.GetFileName).ToList();
+    fileNames.Add("Type a path...");
+
+    var picked = AnsiConsole.Prompt(
+        new SelectionPrompt<string>()
+            .Title("[mediumpurple1]Select a file:[/]")
+            .HighlightStyle(Style.Parse("bold mediumpurple1"))
+            .PageSize(15)
+            .AddChoices(fileNames)
+    );
+
+    if (picked == "Type a path...")
+    {
+        var raw = AnsiConsole.Ask<string>("[mediumpurple1]Full file path:[/]");
+        return ResolvePath(raw);
+    }
+    return Path.Combine(folder, picked);
 }
 
 string DetectFileType(byte[] bytes)
