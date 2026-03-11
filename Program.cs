@@ -1,6 +1,7 @@
 using Spectre.Console;
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -101,6 +102,9 @@ var suspiciousCmdPatterns = new string[]
 
 var lastFindings = new List<Finding>();
 CancellationTokenSource? proxyTokenSource = null;
+const string AppVersion = "2.1";
+var quarantineDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RobbIT", "Quarantine");
+SystemStats? cachedStats = null;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 string ResolvePath(string input)
@@ -205,6 +209,8 @@ bool MatchesMalware(string text, string malware)
 
 // ── Welcome ───────────────────────────────────────────────────────────────────
 ShowWelcome();
+CheckForUpdate();
+StartStatsUpdater();
 
 bool isAdmin = new System.Security.Principal.WindowsPrincipal(
     System.Security.Principal.WindowsIdentity.GetCurrent())
@@ -216,6 +222,7 @@ if (!isAdmin)
 while (true)
 {
     AnsiConsole.WriteLine();
+    ShowStatusBar();
     var choice = AnsiConsole.Prompt(
         new SelectionPrompt<string>()
             .Title("[bold mediumpurple1]Select an option:[/]")
@@ -224,7 +231,8 @@ while (true)
                 "Scan Startup & Persistence", "Scan Scheduled Tasks", "Check Hosts File",
                 "Check WMI Persistence", "Show Network Connections", "Hash a File",
                 "Deep File Scan")
-            .AddChoiceGroup("Network", "Block a Connection", "Manage Blocked IPs", "Live Traffic Monitor", "DPI Bypass")
+            .AddChoiceGroup("Network", "Block a Connection", "Manage Blocked IPs", "Live Traffic Monitor", "DPI Bypass", "Wi-Fi Security Check")
+            .AddChoiceGroup("Tools", "Manage Quarantine")
             .AddChoiceGroup("", "Exit")
     );
     AnsiConsole.WriteLine();
@@ -247,6 +255,8 @@ while (true)
             case "Manage Blocked IPs":        ManageBlockedIPs();        break;
             case "Live Traffic Monitor":      LiveTrafficMonitor();      break;
             case "DPI Bypass":               DpiBypass();               break;
+            case "Wi-Fi Security Check":     CheckWifiSecurity();       break;
+            case "Manage Quarantine":        ManageQuarantine();        break;
             case "Exit":
                 if (proxyTokenSource != null)
                 {
@@ -1707,6 +1717,9 @@ void DeepFileScan()
         Process.Start(new ProcessStartInfo($"https://www.virustotal.com/gui/file/{sha256}") { UseShellExecute = true });
         AnsiConsole.MarkupLine("[green]✓ Opened in your browser.[/]");
     }
+
+    if (riskScore >= 70 && AnsiConsole.Confirm("[red]HIGH RISK file detected. Move to Quarantine?[/]"))
+        QuarantineFile(path);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1834,6 +1847,391 @@ List<string> ExtractStrings(byte[] bytes, int length, int minLen)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+void StartStatsUpdater()
+{
+    // Quick initial fetch (no CPU — needs a delay to measure)
+    try
+    {
+        var drive = new DriveInfo("C");
+        var uptime = TimeSpan.FromMilliseconds(Environment.TickCount64);
+        var winVer = Environment.OSVersion.Version;
+        string winName = winVer.Build >= 22000 ? "Win 11" : "Win 10";
+        cachedStats = new SystemStats(0, 0,
+            (int)((drive.TotalSize - drive.AvailableFreeSpace) * 100 / drive.TotalSize),
+            drive.TotalSize - drive.AvailableFreeSpace, drive.TotalSize,
+            $"{winName} ({winVer.Build})", uptime);
+    }
+    catch { }
+
+    // Background thread updates every 6s with CPU + RAM via PowerShell
+    var t = new Thread(() =>
+    {
+        while (true)
+        {
+            Thread.Sleep(6000);
+            try
+            {
+                var psOut = RunCommand("powershell",
+                    "-NoProfile -Command \"$o=Get-CimInstance Win32_OperatingSystem;$c=(Get-CimInstance Win32_Processor).LoadPercentage;" +
+                    "'{0}|{1}|{2}' -f $c,$o.TotalVisibleMemorySize,$o.FreePhysicalMemory\"", 8000).Trim();
+                var parts = psOut.Split('|');
+                int cpu = 0; long totalRam = 0, freeRam = 0;
+                if (parts.Length >= 3)
+                {
+                    int.TryParse(parts[0], out cpu);
+                    long.TryParse(parts[1], out totalRam);
+                    long.TryParse(parts[2], out freeRam);
+                }
+                int ramPct = totalRam > 0 ? (int)((totalRam - freeRam) * 100 / totalRam) : 0;
+
+                var drive = new DriveInfo("C");
+                int diskPct = (int)((drive.TotalSize - drive.AvailableFreeSpace) * 100 / drive.TotalSize);
+
+                var uptime = TimeSpan.FromMilliseconds(Environment.TickCount64);
+                var winVer = Environment.OSVersion.Version;
+                string winName = winVer.Build >= 22000 ? "Win 11" : "Win 10";
+
+                cachedStats = new SystemStats(cpu, ramPct, diskPct,
+                    drive.TotalSize - drive.AvailableFreeSpace, drive.TotalSize,
+                    $"{winName} ({winVer.Build})", uptime);
+            }
+            catch { }
+        }
+    }) { IsBackground = true, Name = "StatsUpdater" };
+    t.Start();
+}
+
+void ShowStatusBar()
+{
+    var s = cachedStats;
+    var (hourglassArt, timeLabel) = DrawHourglass();
+
+    var layout = new Table().NoBorder().HideHeaders()
+        .AddColumn(new TableColumn("stats"))
+        .AddColumn(new TableColumn("clock").Width(11).PadLeft(3));
+
+    string statsMarkup;
+    if (s != null)
+    {
+        string cpuColor  = s.CpuPct  > 80 ? "red" : s.CpuPct  > 50 ? "yellow" : "green";
+        string ramColor  = s.RamPct  > 80 ? "red" : s.RamPct  > 60 ? "yellow" : "green";
+        string diskColor = s.DiskPct > 90 ? "red" : s.DiskPct > 75 ? "yellow" : "green";
+        string uptimeStr = s.Uptime.Days > 0 ? $"{s.Uptime.Days}d {s.Uptime.Hours}h" : $"{s.Uptime.Hours}h {s.Uptime.Minutes}m";
+        string cpuLabel  = s.CpuPct == 0 ? "[grey]--[/]" : $"[{cpuColor}]{s.CpuPct}%[/]";
+        statsMarkup =
+            $"[grey]CPU   [/] {cpuLabel}\n" +
+            $"[grey]RAM   [/] [{ramColor}]{s.RamPct}%[/]\n" +
+            $"[grey]Disk  [/] [{diskColor}]{s.DiskPct}%[/]\n" +
+            $"[grey]OS    [/] [white]{Markup.Escape(s.WinVer)}[/]\n" +
+            $"[grey]Uptime[/] [white]{uptimeStr}[/]";
+    }
+    else
+    {
+        statsMarkup = "[grey]Loading...[/]";
+    }
+
+    layout.AddRow(
+        new Markup(statsMarkup),
+        new Rows(
+            new Markup(hourglassArt),
+            new Markup($"[grey]{timeLabel}[/]")
+        )
+    );
+
+    AnsiConsole.Write(new Panel(layout).BorderColor(Color.Grey35).Padding(1, 0));
+}
+
+(string art, string time) DrawHourglass()
+{
+    var now = DateTime.Now;
+    double totalMinutes = now.Hour * 60 + now.Minute + now.Second / 60.0;
+    // 0% at 12am, fills to 100% at 12pm, empties back to 0% at 12am
+    double progress = totalMinutes <= 720
+        ? totalMinutes / 720.0
+        : (1440.0 - totalMinutes) / 720.0;
+
+    // 4 rows per half, widths: top→neck = 7,5,3,1 | neck→base = 1,3,5,7
+    // Total cells per half = 16
+    int[] topW = { 7, 5, 3, 1 };
+    int[] botW = { 1, 3, 5, 7 };
+    int elapsed = Math.Clamp((int)Math.Round(progress * 16), 0, 16);
+
+    // Top drains from neck (i=3, w=1) upward
+    int[] topFilled = new int[4];
+    int drain = elapsed;
+    for (int i = 3; i >= 0; i--)
+    {
+        int d = Math.Min(drain, topW[i]);
+        topFilled[i] = topW[i] - d;
+        drain -= d;
+    }
+
+    // Bottom fills from base (i=3, w=7) upward
+    int[] botFilled = new int[4];
+    int fill = elapsed;
+    for (int i = 3; i >= 0; i--)
+    {
+        botFilled[i] = Math.Min(fill, botW[i]);
+        fill -= botFilled[i];
+    }
+
+    string S(int n) => n > 0 ? $"[gold1]{new string('█', n)}[/]" : "";
+    string E(int n) => n > 0 ? $"[grey23]{new string('░', n)}[/]" : "";
+    string F(string c) => $"[mediumpurple1]{c}[/]";
+
+    // Top rows: outer pad = row index, frame = \ ... /
+    string TopRow(int i)
+    {
+        int w = topW[i], filled = topFilled[i];
+        int empty = w - filled, lp = empty / 2, rp = empty - lp;
+        return new string(' ', i) + F("\\") + E(lp) + S(filled) + E(rp) + F("/") + new string(' ', i);
+    }
+
+    // Bottom rows: outer pad = 3-row index, frame = / ... \
+    string BotRow(int i)
+    {
+        int w = botW[i], filled = botFilled[i];
+        int empty = w - filled, lp = empty / 2, rp = empty - lp;
+        return new string(' ', 3 - i) + F("/") + E(lp) + S(filled) + E(rp) + F("\\") + new string(' ', 3 - i);
+    }
+
+    var sb = new StringBuilder();
+    for (int i = 0; i < 4; i++) sb.AppendLine(TopRow(i));
+    for (int i = 0; i < 4; i++)
+    {
+        if (i < 3) sb.AppendLine(BotRow(i));
+        else       sb.Append    (BotRow(i));
+    }
+
+    string timeStr = now.ToString("HH:mm");
+    string timeCentered = timeStr.PadLeft((9 + timeStr.Length) / 2).PadRight(9);
+    return (sb.ToString(), timeCentered);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void CheckForUpdate()
+{
+    try
+    {
+        using var http = new System.Net.Http.HttpClient();
+        http.DefaultRequestHeaders.Add("User-Agent", "RobbIT-Updater");
+        http.Timeout = TimeSpan.FromSeconds(5);
+        var json = http.GetStringAsync("https://api.github.com/repos/efehamd/robb-it/releases/latest").GetAwaiter().GetResult();
+        // Extract tag_name from JSON without System.Text.Json dependency
+        int tagIdx = json.IndexOf("\"tag_name\"");
+        if (tagIdx < 0) return;
+        int colon = json.IndexOf(':', tagIdx);
+        int q1 = json.IndexOf('"', colon + 1);
+        int q2 = json.IndexOf('"', q1 + 1);
+        if (q1 < 0 || q2 < 0) return;
+        string latestTag = json.Substring(q1 + 1, q2 - q1 - 1).TrimStart('v');
+
+        if (string.Compare(latestTag, AppVersion, StringComparison.OrdinalIgnoreCase) > 0)
+        {
+            AnsiConsole.MarkupLine($"\n[yellow]  Update available: v{Markup.Escape(latestTag)} (you have v{AppVersion})[/]");
+            AnsiConsole.MarkupLine("[grey]  Run the install one-liner again to update.[/]\n");
+        }
+    }
+    catch { /* silent — no network or rate limit */ }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void CheckWifiSecurity()
+{
+    AnsiConsole.MarkupLine("[bold mediumpurple1]Checking Wi-Fi security...[/]\n");
+
+    var output = RunCommand("netsh", "wlan show interfaces", 8000);
+    if (string.IsNullOrWhiteSpace(output))
+    {
+        AnsiConsole.MarkupLine("[yellow]No Wi-Fi adapter found or no active connection.[/]");
+        return;
+    }
+
+    string GetField(string label)
+    {
+        var line = output.Split('\n').FirstOrDefault(l => l.TrimStart().StartsWith(label, StringComparison.OrdinalIgnoreCase));
+        if (line == null) return "";
+        int colon = line.IndexOf(':');
+        return colon >= 0 ? line.Substring(colon + 1).Trim() : "";
+    }
+
+    string ssid  = GetField("SSID");
+    string bssid = GetField("BSSID");
+    string auth  = GetField("Authentication");
+    string cipher= GetField("Cipher");
+    string signal= GetField("Signal");
+    string band  = GetField("Radio type");
+    string state = GetField("State");
+
+    if (state != "connected" && !output.Contains("connected"))
+    {
+        AnsiConsole.MarkupLine("[yellow]Not connected to any Wi-Fi network.[/]");
+        return;
+    }
+
+    // Security assessment
+    string risk, riskColor, advice;
+    if (string.IsNullOrEmpty(auth) || auth.Equals("Open", StringComparison.OrdinalIgnoreCase))
+    {
+        risk = "HIGH"; riskColor = "red";
+        advice = "This network has NO password. Anyone nearby can intercept your traffic. Use a VPN or switch networks.";
+    }
+    else if (auth.Contains("WEP", StringComparison.OrdinalIgnoreCase))
+    {
+        risk = "HIGH"; riskColor = "red";
+        advice = "WEP encryption is broken and can be cracked in minutes. Switch to WPA2 or WPA3.";
+    }
+    else if (auth.Contains("WPA2", StringComparison.OrdinalIgnoreCase) || auth.Contains("WPA3", StringComparison.OrdinalIgnoreCase))
+    {
+        risk = "OK"; riskColor = "green";
+        advice = "Strong encryption. Make sure your router firmware is up to date.";
+    }
+    else if (auth.Contains("WPA", StringComparison.OrdinalIgnoreCase))
+    {
+        risk = "MEDIUM"; riskColor = "yellow";
+        advice = "WPA (TKIP) is outdated. Consider upgrading your router to WPA2/WPA3.";
+    }
+    else
+    {
+        risk = "UNKNOWN"; riskColor = "grey";
+        advice = "Could not determine encryption type. Verify your router settings.";
+    }
+
+    AnsiConsole.Write(new Panel(new Markup(
+        $"[grey]Network  :[/] [white]{Markup.Escape(ssid)}[/]\n" +
+        $"[grey]BSSID    :[/] [white]{Markup.Escape(bssid)}[/]\n" +
+        $"[grey]Auth     :[/] [white]{Markup.Escape(auth)}[/]\n" +
+        $"[grey]Cipher   :[/] [white]{Markup.Escape(cipher)}[/]\n" +
+        $"[grey]Signal   :[/] [white]{Markup.Escape(signal)}[/]\n" +
+        $"[grey]Band     :[/] [white]{Markup.Escape(band)}[/]\n\n" +
+        $"[bold {riskColor}]Security: {risk}[/]\n" +
+        $"[grey]{Markup.Escape(advice)}[/]"
+    )).Header("[bold mediumpurple1] Wi-Fi Security Check [/]")
+      .BorderColor(risk == "OK" ? Color.Green : risk == "MEDIUM" ? Color.Yellow : Color.Red)
+      .Padding(2, 1));
+
+    // Check for known risky configs
+    var allNets = RunCommand("netsh", "wlan show all", 8000);
+    int openCount = 0;
+    foreach (var line in allNets.Split('\n'))
+        if (line.Contains("Authentication") && line.Contains("Open")) openCount++;
+    if (openCount > 0)
+        AnsiConsole.MarkupLine($"\n[yellow]  {openCount} open (passwordless) network(s) detected nearby — stay away from them.[/]");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void QuarantineFile(string path)
+{
+    try
+    {
+        Directory.CreateDirectory(quarantineDir);
+        var destName = $"{DateTime.Now:yyyyMMdd_HHmmss}_{Path.GetFileName(path)}";
+        var dest = Path.Combine(quarantineDir, destName);
+        File.Move(path, dest);
+
+        // Log entry
+        var log = Path.Combine(quarantineDir, "quarantine.log");
+        File.AppendAllText(log, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}|QUARANTINE|{path}|{destName}\n");
+
+        AnsiConsole.MarkupLine($"[green]✓ File moved to quarantine: {Markup.Escape(destName)}[/]");
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[red]Quarantine failed: {Markup.Escape(ex.Message)}[/]");
+    }
+}
+
+void ManageQuarantine()
+{
+    Directory.CreateDirectory(quarantineDir);
+    var files = Directory.GetFiles(quarantineDir).Where(f => !f.EndsWith(".log")).OrderByDescending(File.GetLastWriteTime).ToArray();
+
+    if (files.Length == 0)
+    {
+        AnsiConsole.MarkupLine("[grey]Quarantine is empty.[/]");
+        return;
+    }
+
+    AnsiConsole.MarkupLine($"[bold mediumpurple1]Quarantine ({files.Length} file(s))[/]\n");
+
+    var table = new Table().BorderColor(Color.MediumPurple1).Expand();
+    table.AddColumn(new TableColumn("[bold]File[/]"));
+    table.AddColumn(new TableColumn("[bold]Date[/]").Centered());
+    table.AddColumn(new TableColumn("[bold]Size[/]").RightAligned());
+    foreach (var f in files)
+    {
+        var info = new FileInfo(f);
+        table.AddRow(Markup.Escape(info.Name), info.LastWriteTime.ToString("yyyy-MM-dd HH:mm"), $"{info.Length:N0} B");
+    }
+    AnsiConsole.Write(table);
+    AnsiConsole.WriteLine();
+
+    var names = files.Select(Path.GetFileName).ToList()!;
+    names.Add("← Back");
+
+    var picked = AnsiConsole.Prompt(
+        new SelectionPrompt<string>()
+            .Title("[mediumpurple1]Select a file to manage:[/]")
+            .HighlightStyle(Style.Parse("bold mediumpurple1"))
+            .AddChoices(names)
+    );
+    if (picked == "← Back") return;
+
+    var target = Path.Combine(quarantineDir, picked);
+    var action = AnsiConsole.Prompt(
+        new SelectionPrompt<string>()
+            .Title($"[mediumpurple1]What to do with [white]{Markup.Escape(picked)}[/]?[/]")
+            .HighlightStyle(Style.Parse("bold mediumpurple1"))
+            .AddChoices("Restore to original location", "Delete permanently", "Cancel")
+    );
+
+    if (action == "Delete permanently")
+    {
+        if (AnsiConsole.Confirm("[red]Permanently delete this file? This cannot be undone.[/]"))
+        {
+            File.Delete(target);
+            var log = Path.Combine(quarantineDir, "quarantine.log");
+            File.AppendAllText(log, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}|DELETED|{picked}\n");
+            AnsiConsole.MarkupLine("[green]✓ File deleted.[/]");
+        }
+    }
+    else if (action == "Restore to original location")
+    {
+        // Read log to find original path
+        var logPath = Path.Combine(quarantineDir, "quarantine.log");
+        string? originalPath = null;
+        if (File.Exists(logPath))
+        {
+            foreach (var line in File.ReadAllLines(logPath))
+            {
+                var parts = line.Split('|');
+                if (parts.Length >= 4 && parts[3] == picked)
+                { originalPath = parts[2]; break; }
+            }
+        }
+
+        if (originalPath == null)
+        {
+            var dest = AnsiConsole.Ask<string>("[mediumpurple1]Original path not found. Restore to:[/]");
+            originalPath = dest;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(originalPath)!);
+            File.Move(target, originalPath);
+            var log = Path.Combine(quarantineDir, "quarantine.log");
+            File.AppendAllText(log, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}|RESTORED|{originalPath}\n");
+            AnsiConsole.MarkupLine($"[green]✓ Restored to: {Markup.Escape(originalPath)}[/]");
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Restore failed: {Markup.Escape(ex.Message)}[/]");
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 void ExportReport()
 {
     var desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
@@ -1882,3 +2280,4 @@ string[] ParseCsv(string line)
 
 // ── Types ───────────────────────────────────────────────────────────────────
 record Finding(string Item, string Reason, string Action, string Risk, string Category = "");
+record SystemStats(int CpuPct, int RamPct, int DiskPct, long DiskUsed, long DiskTotal, string WinVer, TimeSpan Uptime);
