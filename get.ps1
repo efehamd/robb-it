@@ -1,1 +1,1 @@
-$d="$env:LOCALAPPDATA\RobbIT";New-Item $d -Force -ItemType Directory|Out-Null;Invoke-WebRequest https://github.com/efehamd/robb-it/releases/latest/download/RobbIT.exe -OutFile "$d\robbit.exe";$env:PATH+=";$d";[Environment]::SetEnvironmentVariable("PATH",$env:PATH,"User");robbit
+$d="$env:LOCALAPPDATA\RobbIT";New-Item $d -Force -ItemType Directory|Out-Null;Invoke-WebRequest https://github.com/efehamd/robb-it/releases/latest/download/RobbIT.exe -OutFile "$d\robbit.exe" -UseBasicParsing;$env:PATH+=";$d";[Environment]::SetEnvironmentVariable("PATH",$env:PATH,"User");robbit
