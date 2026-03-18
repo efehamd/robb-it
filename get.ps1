@@ -1,0 +1,1 @@
+$d="$env:LOCALAPPDATA\RobbIT";New-Item $d -Force -ItemType Directory|Out-Null;Invoke-WebRequest https://github.com/efehamd/robb-it/releases/latest/download/RobbIT.exe -OutFile "$d\RobbIT.exe" -UseBasicParsing;$env:PATH+=";$d";[Environment]::SetEnvironmentVariable("PATH",$env:PATH,"User");& "$d\RobbIT.exe"
