@@ -7,7 +7,7 @@ Terminal-based cybersecurity tool for Windows. Scans for malware, monitors netwo
 Open PowerShell and paste:
 
 ```powershell
-$d="$env:LOCALAPPDATA\RobbIT";md $d -f>$null;irm https://github.com/efehamd/robb-it/releases/latest/download/RobbIT.exe -o "$d\robbit.exe";$env:PATH+=";$d";[Environment]::SetEnvironmentVariable("PATH",$env:PATH,"User");robbit
+$d="$env:LOCALAPPDATA\RobbIT";New-Item -ItemType Directory -Force -Path $d | Out-Null;irm https://github.com/efehamd/robb-it/releases/latest/download/RobbIT.exe -o "$d\robbit.exe";$env:PATH+=";$d";[Environment]::SetEnvironmentVariable("PATH",$env:PATH,"User");robbit
 ```
 
 After install, launch anytime with:
