@@ -8,6 +8,7 @@
     <AssemblyName>RobbIT</AssemblyName>
     <Product>Robb-IT Security</Product>
     <Company>Robb-IT</Company>
+    <ApplicationIcon>rabbit.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
